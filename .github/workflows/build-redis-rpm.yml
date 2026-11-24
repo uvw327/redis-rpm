@@ -18,7 +18,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
     steps:
       - name: Checkout packaging repo
         uses: actions/checkout@v4
@@ -57,12 +57,20 @@ jobs:
               chmod -R a+rX dist
             '
 
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-rpm-${{ inputs.version }}-el9-x86_64
+          path: dist/*
+          retention-days: 30
+
       - name: Smoke test RPM (fresh Rocky 9)
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD/dist:/dist" rockylinux:9 bash -lc '
             set -euo pipefail
-            dnf install -y --nogpgcheck /dist/*.rpm
+            timeout 300 dnf install -y --nogpgcheck /dist/*.rpm
             cp /etc/redis/redis.conf /tmp/redis.conf
             sed -i "s/^port .*/port 6380/" /tmp/redis.conf
             sed -i "s/^supervised .*/supervised no/" /tmp/redis.conf
@@ -71,16 +79,8 @@ jobs:
             sed -i "s|^logfile .*|logfile /tmp/redis.log|" /tmp/redis.conf
             sed -i "s|^pidfile .*|pidfile /tmp/redis.pid|" /tmp/redis.conf
             sed -i "s/^bind .*/bind 127.0.0.1/" /tmp/redis.conf
-            redis-server /tmp/redis.conf
-            sleep 2
-            redis-cli -p 6380 PING
-            redis-cli -p 6380 INFO modules | head -30
-            redis-cli -p 6380 SHUTDOWN NOSAVE || true
+            timeout 10 redis-server /tmp/redis.conf --daemonize yes
+            timeout 5 redis-cli -p 6380 PING
+            timeout 5 redis-cli -p 6380 INFO modules | head -30
+            timeout 5 redis-cli -p 6380 SHUTDOWN NOSAVE || true
           '
-
-      - name: Upload RPM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: redis-rpm-${{ inputs.version }}-el9-x86_64
-          path: dist/*
-          retention-days: 30
