@@ -1,0 +1,86 @@
+name: Build Redis RPM (el9 x86_64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Redis tag to build
+        required: true
+        default: "8.10.3"
+      expected_sha:
+        description: Expected commit SHA for the tag
+        required: true
+        default: "1a2574ce1551d3de6e0b4a56756c0fdbc6659e4f"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout packaging repo
+        uses: actions/checkout@v4
+
+      - name: Build builder image
+        run: docker build -f dockerfiles/Dockerfile.rockylinux9 -t redis-builder:rl9 .
+
+      - name: Build Redis with modules
+        env:
+          VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e VERSION -e EXPECTED_SHA \
+            redis-builder:rl9 bash -lc '
+              set -euo pipefail
+              source /etc/profile.d/gcc-toolset-13.sh
+              export BUILD_TLS=yes BUILD_COMPRESSION=yes USE_SYSTEMD=yes DISABLE_WERRORS=yes LTO=0
+              git clone --depth 1 --branch "$VERSION" https://github.com/redis/redis.git /tmp/redis
+              test "$(git -C /tmp/redis rev-parse HEAD)" = "$EXPECTED_SHA"
+              cd /tmp/redis
+              make modules-update MODULES_UPDATE_SHALLOW=1
+              make -C modules install-rust INSTALL_RUST_TOOLCHAIN=yes
+              make -j"$(nproc)" deploy PREFIX=/usr/local
+
+              cd /work
+              curl -fsSL -o /tmp/nfpm.rpm https://github.com/goreleaser/nfpm/releases/download/v2.49.0/nfpm-2.49.0-1.x86_64.rpm
+              dnf install -y /tmp/nfpm.rpm
+              cp templates/nfpm.yaml.tpl nfpm.yaml
+              mkdir -p dist
+              VERSION="$VERSION" ARCH=amd64 nfpm package --packager rpm --target dist
+              rpm -qpl dist/*.rpm
+              sha256sum dist/*.rpm > dist/SHA256SUMS
+              chmod -R a+rX dist
+            '
+
+      - name: Smoke test RPM (fresh Rocky 9)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist:/dist" rockylinux:9 bash -lc '
+            set -euo pipefail
+            dnf install -y --nogpgcheck /dist/*.rpm
+            cp /etc/redis/redis.conf /tmp/redis.conf
+            sed -i "s/^port .*/port 6380/" /tmp/redis.conf
+            sed -i "s/^supervised .*/supervised no/" /tmp/redis.conf
+            sed -i "s/^daemonize .*/daemonize yes/" /tmp/redis.conf
+            sed -i "s|^dir .*|dir /tmp|" /tmp/redis.conf
+            sed -i "s|^logfile .*|logfile /tmp/redis.log|" /tmp/redis.conf
+            sed -i "s|^pidfile .*|pidfile /tmp/redis.pid|" /tmp/redis.conf
+            sed -i "s/^bind .*/bind 127.0.0.1/" /tmp/redis.conf
+            redis-server /tmp/redis.conf
+            sleep 2
+            redis-cli -p 6380 PING
+            redis-cli -p 6380 INFO modules | head -30
+            redis-cli -p 6380 SHUTDOWN NOSAVE || true
+          '
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-rpm-${{ inputs.version }}-el9-x86_64
+          path: dist/*
+          retention-days: 30

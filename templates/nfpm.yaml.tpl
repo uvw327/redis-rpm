@@ -2,6 +2,7 @@ name: "redis"
 arch: "${ARCH}"
 platform: linux
 version: "${VERSION}"
+release: "1.el9"
 section: "default"
 priority: "extra"
 maintainer: "Redis Labs <redis@redis.io>"
