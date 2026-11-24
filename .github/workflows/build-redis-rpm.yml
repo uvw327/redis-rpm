@@ -80,6 +80,10 @@ jobs:
             sed -i "s|^pidfile .*|pidfile /tmp/redis.pid|" /tmp/redis.conf
             sed -i "s/^bind .*/bind 127.0.0.1/" /tmp/redis.conf
             timeout 10 redis-server /tmp/redis.conf --daemonize yes
+            for _ in $(seq 1 10); do
+              if timeout 5 redis-cli -p 6380 PING 2>/dev/null | grep -q PONG; then break; fi
+              sleep 1
+            done
             timeout 5 redis-cli -p 6380 PING
             timeout 5 redis-cli -p 6380 INFO modules | head -30
             timeout 5 redis-cli -p 6380 SHUTDOWN NOSAVE || true
